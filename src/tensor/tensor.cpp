@@ -164,27 +164,107 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
-    return true;
+    // 特殊情况：标量（0 维）、空张量、任意维度大小为0都可以视为连续
+    // 普通情况：最后一维stride=1,倒数第k维的stride为倒数第1~k-1的尺寸相乘，则连续
+    size_t ndim = this->ndim(); // 维度
+    if (ndim == 0) {
+        return true; //  特殊情况
+    }
+
+    auto shape = this->shape(); // 每个维度的大小
+    auto strides = this->strides(); // 每个维度对应的偏移
+    size_t expected = 1; // 预期大小
+    for (long long i = static_cast<long long>(ndim)-1; i >= 0; i--) {
+        if (shape[i] == 0) {
+            return true; // 特殊情况
+        }
+        if (strides[i] != static_cast<ptrdiff_t>(expected)) {
+            return false; // 普通情况，不符合
+        }
+        expected *= shape[i];
+    }
+
+    return true; // 普通情况，符合
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    TensorMeta new_meta;
+    size_t ndim = _meta.shape.size();
+    new_meta.dtype = _meta.dtype;
+    new_meta.shape.resize(ndim);
+    new_meta.strides.resize(ndim);
+    for (size_t i = 0; i < static_cast<size_t>(ndim); i++) {
+        new_meta.shape[i] = _meta.shape[order[i]];
+        new_meta.strides[i] = _meta.strides[order[i]];
+    }
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // 对于total_size改变的应该返回nullptr
+    // 需要区分是否连续,非连续的不能安全地创建view
+    // NumPy对不连续的view进行的操作是返回一个nullptr
+    auto old_shape = this->shape();
+    size_t old_total_size = 1;
+    for (auto s : old_shape) {
+        old_total_size *= s;
+    }
+    size_t new_total_size = 1;
+    for (auto s : shape) {
+        new_total_size *= s;
+    }
+    if (old_total_size != new_total_size) {
+        // view前后不兼容
+        return nullptr;
+    } 
+    if (!this->isContiguous()) {
+        // 不连续
+        return nullptr;
+    } else {
+        // 连续,修改shape和stride就行
+        TensorMeta new_meta;
+        new_meta.dtype = this->dtype();
+        new_meta.shape = shape;
+        size_t new_ndim = shape.size();
+        new_meta.strides.resize(new_ndim);
+        ptrdiff_t stride = 1;
+        for (size_t i = 1; i <= new_ndim; i++) {
+            new_meta.strides[new_ndim-i] = stride;
+            stride *= static_cast<ptrdiff_t>(shape[new_ndim-i]);
+        }
+        return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage));
+    }
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    TensorMeta new_meta;
+    new_meta.dtype = _meta.dtype;
+    new_meta.shape = this->shape();
+    new_meta.strides = this->strides();
+    new_meta.shape[dim] = end-start;
+    size_t new_offset = _offset + start * _meta.strides[dim]* utils::dsize(new_meta.dtype);
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, new_offset));
 }
 
 void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+    size_t total_size = this->_storage->size();
+    if (this->deviceType() == LLAISYS_DEVICE_CPU) {
+        // device_type是CPU(HOST TO HOST)
+        core::context().runtime().api()->memcpy_sync(
+            this->data(), // host
+            src_, // device
+            total_size, // 总大小
+            LLAISYS_MEMCPY_H2H // HOST TO HOST
+        );
+    } else {
+        // deivce_type不是CPU(HOST TO DEVICE)
+        core::context().runtime().api()->memcpy_sync(
+            this->data(), // host
+            src_, // device
+            total_size, // 总大小
+            LLAISYS_MEMCPY_H2D // HOST TO DEVICE
+        );
+    }
 }
 
 tensor_t Tensor::contiguous() const {
